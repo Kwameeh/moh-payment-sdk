@@ -2,30 +2,53 @@
 
 A TypeScript SDK for the MOH Payment Gateway. Supports both vanilla JavaScript and React applications.
 
+## Features
+
+- Multiple payment methods (MTN MoMo, Vodafone Cash, Cash, Card, Insurance)
+- Automatic payment status polling for async payments
+- Idempotency key support to prevent duplicate payments
+- React hooks for easy integration
+- Full TypeScript support
+- Error handling with retryable flags
+
 ## Installation
 
 ```bash
 npm install @moh/payment-sdk
 ```
 
-## Configuration
+## Quick Start
+
+### 1. Initialize the SDK
 
 ```typescript
 import { MohPaymentSDK } from '@moh/payment-sdk';
 
 const sdk = new MohPaymentSDK({
   baseUrl: 'https://api.hospital.com/api/v1',
-  apiKey: process.env.MOH_API_KEY,
-  polling: {
-    intervalMs: 5000,   // Poll every 5 seconds (default)
-    maxAttempts: 24,   // Max 24 attempts = 2 minutes (default)
-  },
+  apiKey: process.env.MOH_API_KEY!,
 });
 ```
 
-## Usage
+### 2. Make a Payment
 
-### React
+```typescript
+const payment = await sdk.pay({
+  payment_method: PaymentMethod.MTN_MOMO,
+  amount: 5000, // 50 GHS in pesewas
+  currency: 'GHS',
+  provider_data: { phone: '0241234567' },
+  metadata: { bill_id: 'BILL-001', patient_id: 'PAT-001' },
+});
+```
+
+---
+
+## Usage Examples
+
+### React Integration
+
+#### Basic Payment Form
 
 ```tsx
 import { MohPaymentSDK, usePayment, PaymentMethod } from '@moh/payment-sdk/react';
@@ -35,31 +58,32 @@ const sdk = new MohPaymentSDK({
   apiKey: import.meta.env.VITE_API_KEY,
 });
 
-function PaymentForm({ billId, amount, patientId }) {
-  const { isLoading, isProcessing, payment, error, pay, cancel, reset } = usePayment(sdk);
+function PaymentPage() {
+  const { isProcessing, payment, error, pay, cancel } = usePayment(sdk);
 
-  const handlePay = async () => {
+  const handlePayment = async () => {
     await pay(
       {
         payment_method: PaymentMethod.MTN_MOMO,
-        amount: amount * 100, // Convert to pesewas
+        amount: 50000, // 500 GHS
         currency: 'GHS',
         provider_data: { phone: '0241234567' },
-        metadata: { bill_id: billId, patient_id: patientId },
+        metadata: { bill_id: 'BILL-123', patient_id: 'PAT-456' },
       },
       {
-        onPending: () => console.log('Check your phone for payment prompt...'),
-        onSuccess: (p) => console.log('Payment successful:', p.transaction_id),
-        onFailed: (e) => console.error('Payment failed:', e.message),
-        onRetry: (attempt, max) => console.log(`Verifying... ${attempt}/${max}`),
+        onPending: () => console.log('Payment initiated'),
+        onSuccess: (p) => console.log('Paid!', p.transaction_id),
+        onFailed: (e) => console.error('Failed:', e.message),
+        onRetry: (attempt, max) => console.log(`Checking... ${attempt}/${max}`),
       }
     );
   };
 
   if (isProcessing) {
     return (
-      <div>
-        <p>Check your phone for the payment prompt...</p>
+      <div className="payment-pending">
+        <p>Check your phone for payment prompt</p>
+        <p>Enter PIN to confirm</p>
         <button onClick={cancel}>Cancel</button>
       </div>
     );
@@ -67,8 +91,8 @@ function PaymentForm({ billId, amount, patientId }) {
 
   if (payment?.status === 'success') {
     return (
-      <div>
-        <p>Payment successful!</p>
+      <div className="payment-success">
+        <h2>Payment Successful!</h2>
         <p>Transaction ID: {payment.transaction_id}</p>
       </div>
     );
@@ -76,10 +100,61 @@ function PaymentForm({ billId, amount, patientId }) {
 
   return (
     <div>
-      <button onClick={handlePay} disabled={isLoading}>
-        Pay with MTN MoMo
+      <h1>Pay Bill</h1>
+      <p>Amount: GHS 500.00</p>
+      <button onClick={handlePayment}>Pay with MTN MoMo</button>
+      {error && <p className="error">{error.message}</p>}
+    </div>
+  );
+}
+```
+
+#### With Payment Method Selection
+
+```tsx
+function PaymentForm() {
+  const [selectedMethod, setSelectedMethod] = useState(PaymentMethod.MTN_MOMO);
+  const { isProcessing, pay, cancel } = usePayment(sdk);
+
+  const paymentMethods = [
+    { method: PaymentMethod.MTN_MOMO, label: 'MTN MoMo' },
+    { method: PaymentMethod.VODAFONE_CASH, label: 'Vodafone Cash' },
+    { method: PaymentMethod.CASH, label: 'Cash' },
+  ];
+
+  const handlePay = async () => {
+    const providerData = selectedMethod === PaymentMethod.MTN_MOMO
+      ? { phone: '0241234567' }
+      : selectedMethod === PaymentMethod.VODAFONE_CASH
+      ? { phone: '0201234567' }
+      : { received_amount: 50000, received_by: 'John Doe' };
+
+    await pay({
+      payment_method: selectedMethod,
+      amount: 50000,
+      currency: 'GHS',
+      provider_data: providerData,
+      metadata: { bill_id: 'BILL-001' },
+    });
+  };
+
+  return (
+    <div>
+      <select 
+        value={selectedMethod} 
+        onChange={(e) => setSelectedMethod(e.target.value as PaymentMethod)}
+        disabled={isProcessing}
+      >
+        {paymentMethods.map(({ method, label }) => (
+          <option key={method} value={method}>{label}</option>
+        ))}
+      </select>
+      
+      <button onClick={handlePay} disabled={isProcessing}>
+        Pay GHS 500
       </button>
-      {error && <p>Error: {error.message}</p>}
+      
+      {isProcessing && <button onClick={cancel}>Cancel</button>}
     </div>
   );
 }
@@ -88,74 +163,143 @@ function PaymentForm({ billId, amount, patientId }) {
 ### Vanilla JavaScript
 
 ```typescript
-import { MohPaymentSDK, PaymentMethod } from '@moh/payment-sdk';
+import { MohPaymentSDK, PaymentMethod, PaymentStatus } from '@moh/payment-sdk';
 
 const sdk = new MohPaymentSDK({
   baseUrl: 'https://api.hospital.com/api/v1',
   apiKey: 'your-api-key',
 });
 
-async function processPayment() {
+async function processBillPayment(billId, amount, phone) {
   try {
     const payment = await sdk.pay(
       {
-        payment_method: PaymentMethod.CASH,
-        amount: 25000,
+        payment_method: PaymentMethod.MTN_MOMO,
+        amount: amount * 100, // Convert to pesewas
         currency: 'GHS',
-        provider_data: { received_amount: 30000 },
-        metadata: { bill_id: 'BILL-001', patient_id: 'PAT-001' },
+        provider_data: { phone },
+        metadata: { bill_id: billId },
       },
       {
-        onSuccess: (p) => console.log('Receipt:', p),
-        onFailed: (e) => console.error('Error:', e.message),
+        onPending: (p) => console.log('Pending:', p.status),
+        onSuccess: (p) => {
+          console.log('Success!', p.transaction_id);
+          updateBillStatus(billId, 'paid');
+        },
+        onFailed: (e) => {
+          console.error('Failed:', e.code, e.message);
+        },
+        onRetry: (attempt, max) => {
+          console.log(`Verifying payment... ${attempt}/${max}`);
+        },
       }
     );
-    
-    console.log('Payment result:', payment);
+
+    return payment;
   } catch (error) {
     console.error('Payment error:', error);
   }
 }
-```
 
-## Payment Methods
+// Cash payment (synchronous)
+async function processCashPayment(billId, amountReceived) {
+  const payment = await sdk.pay({
+    payment_method: PaymentMethod.CASH,
+    amount: 50000,
+    currency: 'GHS',
+    provider_data: { 
+      received_amount: amountReceived,
+      received_by: 'Admin User',
+      receipt_number: 'RCP-001'
+    },
+    metadata: { bill_id: billId },
+  });
 
-| Method | Enum Value | Type |
-|--------|------------|------|
-| Stripe | `PaymentMethod.STRIPE` | Async |
-| Card | `PaymentMethod.CARD` | Async |
-| MTN MoMo | `PaymentMethod.MTN_MOMO` | Async |
-| Vodafone Cash | `PaymentMethod.VODAFONE_CASH` | Async |
-| Cash | `PaymentMethod.CASH` | Sync |
-| Insurance | `PaymentMethod.INSURANCE` | Async |
-
-## API Reference
-
-### `MohPaymentSDK`
-
-#### Constructor Options
-
-```typescript
-interface SDKConfig {
-  baseUrl: string;      // API base URL
-  apiKey: string;       // API key for authentication
-  polling?: {
-    intervalMs?: number;   // Poll interval in ms (default: 5000)
-    maxAttempts?: number;  // Max poll attempts (default: 24)
-  };
+  console.log('Cash payment:', payment.status);
 }
 ```
 
-#### Methods
+### Checking Payment Status
 
-| Method | Description |
-|--------|-------------|
-| `pay(request, callbacks)` | Initiate a payment |
-| `getStatus(transactionId, providerReference?)` | Check payment status |
-| `refund(paymentId, request)` | Process a refund |
-| `cancelPayment()` | Cancel ongoing async payment |
+```typescript
+// Check status of existing payment
+async function checkPaymentStatus(transactionId) {
+  const payment = await sdk.getStatus(transactionId);
+  console.log('Status:', payment.status);
+  return payment;
+}
 
-### `usePayment` (React Hook)
+// Process refund
+async function refundPayment(paymentId) {
+  const refund = await sdk.refund(paymentId, {
+    amount: 25000, // Partial refund
+    refund_type: RefundType.PARTIAL,
+    reason: 'Customer request',
+  });
+  
+  console.log('Refund status:', refund.status);
+}
+```
+
+---
+
+## Payment Methods
+
+| Method | Enum Value | Type | Provider Data |
+|--------|------------|------|---------------|
+| MTN MoMo | `PaymentMethod.MTN_MOMO` | Async | `{ phone: '0241234567' }` |
+| Vodafone Cash | `PaymentMethod.VODAFONE_CASH` | Async | `{ phone: '0201234567' }` |
+| Cash | `PaymentMethod.CASH` | Sync | `{ received_amount: number, received_by: string }` |
+| Card | `PaymentMethod.CARD` | Async | `{ card_token?: string }` |
+| Insurance | `PaymentMethod.INSURANCE` | Async | `{ policy_number: string }` |
+| Stripe | `PaymentMethod.STRIPE` | Async | `{ payment_intent_id?: string }` |
+
+---
+
+## API Reference
+
+### Constructor
+
+```typescript
+const sdk = new MohPaymentSDK({
+  baseUrl: 'https://api.hospital.com/api/v1',
+  apiKey: 'your-api-key',
+  polling: {
+    intervalMs: 5000,   // Poll every 5 seconds (default)
+    maxAttempts: 24,    // Max 24 attempts = 2 minutes (default)
+  },
+});
+```
+
+### Methods
+
+| Method | Parameters | Returns |
+|--------|------------|---------|
+| `pay` | `PaymentRequest, PaymentCallbacks?` | `Promise<PaymentResponse>` |
+| `getStatus` | `transactionId, providerReference?` | `Promise<PaymentResponse>` |
+| `refund` | `paymentId, RefundRequest` | `Promise<RefundResponse>` |
+| `cancelPayment` | - | `void` |
+
+### Types
+
+```typescript
+interface PaymentRequest {
+  payment_method: PaymentMethod;
+  amount: number;           // In smallest currency unit (pesewas)
+  currency: string;         // ISO 4217 (e.g., 'GHS')
+  idempotency_key?: string; // Auto-generated if not provided
+  provider_data: Record<string, any>;
+  metadata?: Record<string, any>;
+}
+
+interface RefundRequest {
+  amount: number;
+  refund_type: RefundType;
+  reason?: string;
+}
+```
+
+### React Hook Return Values
 
 ```typescript
 const {
@@ -165,25 +309,40 @@ const {
   error,          // Error if failed
   pay,            // Initiate payment
   cancel,         // Cancel async payment
-  reset,          // Reset state
+  reset,          // Reset all state
 } = usePayment(sdk);
 ```
 
-### Payment Callbacks
-
-```typescript
-interface PaymentCallbacks {
-  onPending?: (payment: PaymentResponse) => void;
-  onSuccess?: (payment: PaymentResponse) => void;
-  onFailed?: (error: PaymentError) => void;
-  onRequiresAction?: (actionUrl: string) => void;
-  onRetry?: (attempt: number, maxAttempts: number) => void;
-}
-```
+---
 
 ## Error Handling
 
 ```typescript
+// Handle specific errors
+await pay(request, {
+  onFailed: (error) => {
+    switch (error.code) {
+      case PaymentErrorCode.INSUFFICIENT_FUNDS:
+        // Show insufficient funds message
+        break;
+      case PaymentErrorCode.TIMEOUT:
+        // Allow retry
+        break;
+      case PaymentErrorCode.CANCELLED_BY_USER:
+        // User cancelled on their phone
+        break;
+      default:
+        // Generic error
+    }
+    
+    // Check if retryable
+    if (error.retryable) {
+      // Can retry the payment
+    }
+  },
+});
+
+// Error codes
 enum PaymentErrorCode {
   INSUFFICIENT_FUNDS = 'INSUFFICIENT_FUNDS',
   TIMEOUT = 'TIMEOUT',
@@ -196,14 +355,19 @@ enum PaymentErrorCode {
   NOT_FOUND = 'NOT_FOUND',
   UNKNOWN = 'UNKNOWN',
 }
-
-interface PaymentError {
-  code: PaymentErrorCode;
-  message: string;
-  retryable: boolean;
-  originalError?: Error;
-}
 ```
+
+---
+
+## Environment Variables
+
+```env
+# .env
+VITE_API_URL=https://api.hospital.com/api/v1
+VITE_API_KEY=your-api-key-here
+```
+
+---
 
 ## License
 
