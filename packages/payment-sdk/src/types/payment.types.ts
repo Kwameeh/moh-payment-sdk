@@ -75,6 +75,11 @@ export interface PaymentCallbacks {
   onRetry?: (attempt: number, maxAttempts: number) => void;
 }
 
+export interface RefundCallbacks {
+  onSuccess?: (refund: RefundResponse) => void;
+  onFailed?: (error: PaymentError) => void;
+}
+
 export interface SDKConfig {
   baseUrl: string;
   apiKey: string;
